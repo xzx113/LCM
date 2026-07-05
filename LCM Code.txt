@@ -1,0 +1,659 @@
+#Regular expression matching code
+
+import pandas as pd
+import re
+
+# ===================== 1. 催收力度（六类行为标志） =====================
+L1_patterns = [
+    re.compile(r'(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+]
+L2_patterns = [
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+]
+L3_patterns = [
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+]
+L4_patterns = [
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+]
+L5_patterns = [
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD$)', re.I),
+]
+L6_patterns = [
+    re.compile(r'(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+    re.compile(r'(SENSITIVE_WORD).*(SENSITIVE_WORD).*(SENSITIVE_WORD)', re.I),
+]
+
+def get_collection_flags(text):
+    """返回六类催收行为的0/1标志"""
+    if not isinstance(text, str):
+        text = str(text)
+    return {
+        'L1_attitude': int(any(p.search(text) for p in L1_patterns)),
+        'L2_friend': int(any(p.search(text) for p in L2_patterns)),
+        'L3_family': int(any(p.search(text) for p in L3_patterns)),
+        'L4_work': int(any(p.search(text) for p in L4_patterns)),
+        'L5_visit': int(any(p.search(text) for p in L5_patterns)),
+        'L6_lawsuit': int(any(p.search(text) for p in L6_patterns)),
+    }
+
+# ===================== 2. 催收频次等级（优化版） =====================
+def get_frequency_level(text):
+    if not isinstance(text, str):
+        text = str(text)
+    # 数字匹配（限定上下文）
+    digit_patterns = [
+        re.compile(r'(?:SENSITIVE_WORD)?\s*(?:SENSITIVE_WORD)\s*(\d+)\s*(?:SENSITIVE_WORD)?\s*SENSITIVE_WORD', re.I),
+        re.compile(r'(?:SENSITIVE_WORD)?\s*(\d+)\s*(?:SENSITIVE_WORD)?\s*SENSITIVE_WORD', re.I),
+        re.compile(r'SENSITIVE_WORD?(\d+)\s*SENSITIVE_WORD', re.I),
+        re.compile(r'SENSITIVE_WORD(\d+)\s*SENSITIVE_WORD', re.I),
+        re.compile(r'(\d+)\s*SENSITIVE_WORD', re.I),
+    ]
+    max_num = 0
+    for pat in digit_patterns:
+        m = pat.search(text)
+        if m:
+            # 排除自我否定语境（简略版）
+            start, end = m.span()
+            preceding = text[max(0, start-15):start]
+            if re.search(r'(SENSITIVE_WORD)', preceding, re.I):
+                continue
+            num = int(m.group(1))
+            if num > max_num:
+                max_num = num
+    if max_num > 0:
+        if max_num <= 5:
+            return 1
+        elif max_num <= 15:
+            return 2
+        else:
+            return 3
+    # 模糊关键词
+    if re.search(r'(SENSITIVE_WORD)', text, re.I):
+        return 3
+    if re.search(r'(SENSITIVE_WORD)', text, re.I):
+        return 2
+    if re.search(r'(SENSITIVE_WORD)', text, re.I):
+        return 1
+    # 兜底：“SENSITIVE_WORD”无数字 → 2；“SENSITIVE_WORD”无数字 → 1
+    if re.search(r'(SENSITIVE_WORD).*打', text, re.I) or re.search(r'(SENSITIVE_WORD).*SENSITIVE_WORD', text, re.I):
+        return 2
+    if re.search(r'SENSITIVE_WORD.*SENSITIVE_WORD', text, re.I) or re.search(r'SENSITIVE_WORD.*SENSITIVE_WORD', text, re.I):
+        return 1
+    return 0
+
+# ===================== 3. 敏感词（B1A，） =====================
+core_sensitive_words = [
+    SENSITIVE_WORD
+]
+escaped_words = [re.escape(w) for w in core_sensitive_words]
+sensitive_pattern = re.compile('|'.join(escaped_words), re.I)
+
+def get_sensitive_density(text):
+    """返回敏感词密度（次数/总字符数 * 100）"""
+    if not isinstance(text, str):
+        text = str(text)
+    if len(text) == 0:
+        return 0.0
+    count = len(sensitive_pattern.findall(text))
+    return (count / len(text)) * 100
+
+# ===================== 主处理 =====================
+input_path = r"基础数据.xlsx"
+df = pd.read_excel(input_path)
+
+# 确保有Text列
+if 'Text' not in df.columns:
+    raise ValueError("Excel文件中缺少'Text'列，请检查")
+
+# 提取特征
+flags_list = []
+freq_list = []
+sens_list = []
+for text in df['Text']:
+    flags = get_collection_flags(text)
+    flags_list.append(flags)
+    freq_list.append(get_frequency_level(text))
+    sens_list.append(get_sensitive_density(text))
+
+# 将flags字典拆分为多个列
+flags_df = pd.DataFrame(flags_list)
+result_df = pd.concat([df, flags_df, 
+                       pd.DataFrame({'催收频次等级': freq_list}),
+                       pd.DataFrame({'敏感词密度': sens_list})], axis=1)
+
+# 将中文列名改为英文
+result_df = result_df.rename(columns={
+    '催收频次等级': 'collection_freq_level',
+    '敏感词密度': 'sensitive_word_density'
+})
+
+# 保存
+output_path = r"基础数据_特征标记.xlsx"
+result_df.to_excel(output_path, index=False)
+print(f"处理完成！共处理 {len(df)} 条记录。")
+print("新增列：L1_attitude, L2_friend, L3_family, L4_work, L5_visit, L6_lawsuit, collection_freq_level, sensitive_word_density")
+print(f"结果已保存至：{output_path}")
+
+
+#LCM code
+
+import pandas as pd
+import json
+import re
+import time
+from openai import OpenAI
+
+# ===================== 配置 =====================
+# 以下配置在提交审稿时请替换为您的实际密钥和端点，但注意不要公开
+API_KEY = ""  # 请替换为您的 API Key
+BASE_URL = "https://aistudio.baidu.com/llm/lmapi/v3"  # API Base URL
+MODEL_NAME = "ERNIE-3.5-8K"  # 模型名称
+MAX_TEXT_LENGTH = 2048
+RETRY_TIMES = 3
+SLEEP_TIME = 0.3
+
+client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+
+# ===================== Prompt ======================
+LCM_PROMPT = """
+你是一个文本分析工具。请严格按照下面的要求分析用户输入的文本，**只输出一行 JSON**，不要输出任何其他解释或标记。
+
+### 任务
+统计文本中以下两类语言特征的数量：
+
+1. **负向形容词（ADJ）**：描述催收方/平台的负面**稳定特质**，例如：无耻、恶心、暴力、恶劣、垃圾（作形容词时）、可恶。
+   - 需要判断指向对象是否为「催收方、平台、公司、你们、美团」等（计入 ADJ_to_creditor）。
+   - **注意**：描述“情绪状态”的词（如崩溃、愤怒、绝望、烦躁）无论是否被副词修饰，一律归入 SV（见下方），不归入 ADJ。
+
+2. **负向状态动词（SV）**：表达因对方行为或处境而引发的**负面情绪状态**。例如：恨、讨厌、反感、愤怒、崩溃、绝望、受不了、烦、生气、痛苦。
+   - **不需要判断指向对象**，只要词语本身表达了负面情绪状态，即计入 SV_negative_total。
+   - 包含“让/使/令…崩溃/愤怒”这类短语中的核心词。
+   - **归属优先级**：当一个词既可作形容词又可作情绪动词时（如“崩溃”“愤怒”），一律归入 SV，不归入 ADJ。
+
+### 不需要统计的类别
+- 描述性行动动词（如“打电话”“还钱”）
+- 解释性行动动词（如“骚扰”“威胁”“欺骗”）
+- 其他中性或正向词汇
+
+### 输出格式（严格 JSON）
+{{
+  "ADJ_total": 数字,
+  "ADJ_to_creditor": 数字,
+  "SV_negative_total": 数字
+}}
+
+### Few-shot 示例
+
+示例1：
+文本：你们平台真是太无耻了，我恨你们。
+输出：
+{{
+  "ADJ_total": 1,
+  "ADJ_to_creditor": 1,
+  "SV_negative_total": 1
+}}
+
+示例2：
+文本：美团恶心，天天打电话骚扰，烦死了。
+输出：
+{{
+  "ADJ_total": 1,
+  "ADJ_to_creditor": 1,
+  "SV_negative_total": 1
+}}
+注释：“恶心”是ADJ；“骚扰”为解释性行动动词，不计入任何类别；“烦死了”是SV。
+
+示例3：
+文本：太可恶了！真受不了你们。
+输出：
+{{
+  "ADJ_total": 1,
+  "ADJ_to_creditor": 1,
+  "SV_negative_total": 1
+}}
+
+示例4：
+文本：你们这样让我很愤怒，非常讨厌。
+输出：
+{{
+  "ADJ_total": 0,
+  "ADJ_to_creditor": 0,
+  "SV_negative_total": 2
+}}
+
+示例5：
+文本：你们太让人崩溃了，我彻底愤怒了。
+输出：
+{{
+  "ADJ_total": 0,
+  "ADJ_to_creditor": 0,
+  "SV_negative_total": 2
+}}
+
+### 待分析的文本
+{text}
+"""
+
+
+def extract_json_from_response(response_text: str) -> dict:
+    """从LLM返回的文本中提取JSON对象"""
+    try:
+        return json.loads(response_text.strip())
+    except:
+        pass
+    match = re.search(r'\{[^{}]*\}', response_text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except:
+            pass
+    # 默认返回移除了 ADJ_intense_to_creditor
+    return {"ADJ_total": 0, "ADJ_to_creditor": 0, "SV_negative_total": 0}
+
+
+def get_lcm_counts(text: str) -> dict:
+    """调用LLM获取LCM统计计数"""
+    if not text or len(text.strip()) < 10:
+        return {"ADJ_total": 0, "ADJ_to_creditor": 0, "SV_negative_total": 0}
+    if len(text) > MAX_TEXT_LENGTH:
+        text = text[:MAX_TEXT_LENGTH]
+
+    prompt = LCM_PROMPT.format(text=text)
+
+    for attempt in range(RETRY_TIMES):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=300,
+            )
+            content = response.choices[0].message.content
+            counts = extract_json_from_response(content)
+          
+            for key in ["ADJ_total", "ADJ_to_creditor", "SV_negative_total"]:
+                if key not in counts:
+                    counts[key] = 0
+            return counts
+        except Exception as e:
+            print(f"  请求失败 (尝试 {attempt + 1}/{RETRY_TIMES}): {str(e)[:50]}")
+            time.sleep(2)
+    return {"ADJ_total": 0, "ADJ_to_creditor": 0, "SV_negative_total": 0}
+
+
+def compute_b1b(counts: dict, text: str) -> float:
+    """计算 B1B 分数，"""
+    total_chars = len(text)
+    if total_chars == 0:
+        return 0.0
+    # 只保留 ADJ_to_creditor * 4 和 SV * 3
+    weighted_sum = counts["ADJ_to_creditor"] * 4 + counts["SV_negative_total"] * 3
+    return (weighted_sum / total_chars) * 100
+
+
+def main():
+    # 请根据实际数据位置修改
+    input_file = "./data/打分数据集_cleaned.xlsx"  
+    df = pd.read_excel(input_file)
+
+    # 设置文本列名（请根据你的实际列名修改）
+    text_column = "客户文本"
+    if text_column not in df.columns:
+        print(f"错误：Excel文件中未找到列 '{text_column}'。可用的列有：{list(df.columns)}")
+        return
+
+    results = []
+    for idx, row in df.iterrows():
+        text = str(row[text_column]) if pd.notna(row[text_column]) else ""
+        if len(text.strip()) < 10:
+            print(f"跳过第{idx + 1}行：文本过短")
+            results.append({
+                "客户ID": row.get("客户ID", idx + 1),
+                "ADJ_total": 0,
+                "ADJ_to_creditor": 0,
+                "SV_negative_total": 0,
+                "B1B_score": 0,
+                "text_length": len(text)
+            })
+            continue
+
+        print(f"处理第{idx + 1}行，文本长度: {len(text)}")
+        counts = get_lcm_counts(text)
+        b1b = compute_b1b(counts, text)
+        results.append({
+            "客户ID": row.get("客户ID", idx + 1),
+            "ADJ_total": counts["ADJ_total"],
+            "ADJ_to_creditor": counts["ADJ_to_creditor"],
+            "SV_negative_total": counts["SV_negative_total"],
+            "B1B_score": b1b,
+            "text_length": len(text)
+        })
+        time.sleep(SLEEP_TIME)
+
+  
+    output_file = "./output/LCM统计结果.xlsx"  
+    pd.DataFrame(results).to_excel(output_file, index=False)
+    print(f"\n✅ 处理完成！共处理 {len(results)} 条文本，结果保存至：{output_file}")
+
+
+if __name__ == "__main__":
+    main()
+
+#PSM Code
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from scipy.spatial import KDTree
+from scipy.stats import wilcoxon
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# ==================== 1. 读取数据 ====================
+file_path = r"基础数据_中介实验.xlsx"
+df = pd.read_excel(file_path)
+
+
+
+# ==================== 2. 定义处理变量 ====================
+df['treatment'] = ((df['sensitive_word_density'] > 0) &
+                   ((df['ADJ_Ratio'] > 0) | (df['SV_Ratio'] > 0))).astype(int)
+
+print(f"处理组样本量: {df['treatment'].sum()}")
+print(f"对照组样本量: {len(df) - df['treatment'].sum()}")
+
+# ==================== 3. 协变量 ====================
+covariates = ['Neuroticism', 'Conscientiousness', 'Agreeableness',
+              'L1_attitude', 'L2_friend', 'L3_family', 'L4_work', 'L5_visit',
+              'L6_lawsuit', 'collection_freq_level']
+X = df[covariates].copy()
+y = df['treatment'].copy()
+
+# 标准化
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# ==================== 4. 估计倾向得分 ====================
+ps_model = LogisticRegression(max_iter=1000, random_state=42)
+ps_model.fit(X_scaled, y)
+df['ps'] = ps_model.predict_proba(X_scaled)[:, 1]
+
+# ==================== 5. 倾向得分匹配（1:1 最近邻，不放回，带卡尺） ====================
+treatment_df = df[df['treatment'] == 1].copy().sort_values('ps').reset_index(drop=True)
+control_df = df[df['treatment'] == 0].copy().sort_values('ps').reset_index(drop=True)
+
+# 计算卡尺阈值（倾向得分标准差的0.2倍）
+caliper = 0.08 * df['ps'].std()
+print(f"\n卡尺阈值: {caliper:.4f}")
+
+# 构建KDTree，查询时一次返回前5个最近邻（可根据需要调整）
+k_neighbors =5
+tree = KDTree(control_df['ps'].values.reshape(-1, 1))
+distances, indices = tree.query(treatment_df['ps'].values.reshape(-1, 1), k=k_neighbors)
+
+matched_pairs = []  # 存储 (处理组索引, 对照组索引) 元组
+used_control_idx = set()  # 已使用的对照组在control_df中的位置
+
+for i in range(len(treatment_df)):
+    # 当前处理组的候选对照距离和索引
+    dist_list = distances[i]  # 长度为 k_neighbors 的数组
+    idx_list = indices[i]  # 长度为 k_neighbors 的数组
+
+    # 按距离从小到大排序（已由KDTree返回，但保险起见再排一次）
+    sorted_pairs = sorted(zip(dist_list, idx_list), key=lambda x: x[0])
+
+    matched = False
+    for dist, c_idx in sorted_pairs:
+        if dist > caliper:
+            break  # 距离超出卡尺，后面的更远，直接放弃
+        if c_idx not in used_control_idx:
+            # 找到可用对照
+            matched_pairs.append((i, c_idx))
+            used_control_idx.add(c_idx)
+            matched = True
+            break
+    if not matched:
+        # 该处理组未匹配到合适对照，丢弃
+        print(f"处理组样本 {i} (ps={treatment_df.loc[i, 'ps']:.4f}) 未找到匹配，已丢弃")
+
+# 提取匹配后的处理组和对照组
+matched_treatment = treatment_df.iloc[[p[0] for p in matched_pairs]].reset_index(drop=True)
+matched_control = control_df.iloc[[p[1] for p in matched_pairs]].reset_index(drop=True)
+
+print(f"\n成功匹配 {len(matched_pairs)} 对")
+if len(matched_pairs) < len(treatment_df):
+    print(f"丢弃了 {len(treatment_df) - len(matched_pairs)} 个处理组样本")
+
+# 合并（保留配对ID）
+matched_treatment['pair_id'] = range(len(matched_treatment))
+matched_control['pair_id'] = range(len(matched_control))
+matched_df = pd.concat([matched_treatment, matched_control], ignore_index=True)
+
+# ==================== 绘制倾向得分共同支撑域（全英文/自动匹配当前卡尺） ====================
+import matplotlib.pyplot as plt
+
+# 设置全局字体为Arial（学术期刊通用）
+plt.rcParams['font.family'] = 'Arial'
+plt.rcParams['pdf.fonttype'] = 42  # 确保PDF中的文字可编辑
+
+# 创建画布
+fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
+
+# 绘制匹配前处理组与对照组的倾向得分分布
+ax.hist(treatment_df['ps'], bins=30, alpha=0.6, label='Treatment (Before)',
+        color='#2E86C1', density=True, edgecolor='black', linewidth=0.5)
+ax.hist(control_df['ps'], bins=30, alpha=0.6, label='Control (Before)',
+        color='#E74C3C', density=True, edgecolor='black', linewidth=0.5)
+
+# 【关键修改】直接引用变量 caliper，不再写死为 0.08
+ax.axvline(x=caliper, linestyle='--', color='black', linewidth=1.5,
+           label=f'Caliper ({caliper:.4f})')  # 保留4位小数，显示 0.0152
+
+# 全部使用英文标签
+ax.set_xlabel('Propensity Score', fontsize=14, fontweight='bold')
+ax.set_ylabel('Density', fontsize=14, fontweight='bold')
+ax.set_title('Common Support Domain Before Matching', fontsize=16, fontweight='bold')
+ax.legend(fontsize=12, framealpha=0.9)
+ax.grid(alpha=0.3, linestyle=':')
+
+# 保存高清PDF和PNG
+pdf_path = r"Common_Support_Before_Matching.pdf"
+plt.savefig(pdf_path, format='pdf', bbox_inches='tight', dpi=300)
+print(f"高清PDF图片已保存至：{pdf_path}")
+
+png_path = r"Common_Support_Before_Matching.png"
+plt.savefig(png_path, dpi=300, bbox_inches='tight')
+print(f"高清PNG图片已保存至：{png_path}")
+
+plt.show()
+# ==================== 6. 平衡性检验（SMD） ====================
+def compute_smd(df, treatment_col, covariates):
+    treated = df[df[treatment_col] == 1]
+    control = df[df[treatment_col] == 0]
+    smd_dict = {}
+    for col in covariates:
+        mean_t = treated[col].mean()
+        mean_c = control[col].mean()
+        var_t = treated[col].var()
+        var_c = control[col].var()
+        pooled_std = np.sqrt((var_t + var_c) / 2)
+        smd = (mean_t - mean_c) / pooled_std if pooled_std > 0 else 0
+        smd_dict[col] = abs(smd)
+    return smd_dict
+
+
+smd_before = compute_smd(df, 'treatment', covariates)
+smd_after = compute_smd(matched_df, 'treatment', covariates)
+
+print("\n=== 倾向得分匹配前后平衡性对比（SMD） ===")
+print(f"{'协变量':<25} {'匹配前SMD':>10} {'匹配后SMD':>10} {'改善':>10}")
+print("-" * 60)
+for col in covariates:
+    before = smd_before[col]
+    after = smd_after[col]
+    improvement = before - after
+    print(f"{col:<25} {before:>10.3f} {after:>10.3f} {improvement:>10.3f}")
+
+max_smd = max(smd_after.values())
+print(f"\n匹配后最大SMD: {max_smd:.3f} {'（达标）' if max_smd < 0.1 else '（未达标，建议调整协变量或匹配方法）'}")
+
+# ==================== 7. 结果比较 ====================
+treated_y = matched_treatment['Spillover_flag'].mean()
+control_y = matched_control['Spillover_flag'].mean()
+diff = treated_y - control_y
+print(f"\n=== 匹配后处理效应 ===")
+print(f"处理组投诉率: {treated_y:.3f}")
+print(f"对照组投诉率: {control_y:.3f}")
+print(f"差异 (ATT): {diff:.3f}")
+
+# 配对Wilcoxon检验
+## ==================== 7. 结果比较（手动 McNemar 精确检验） ====================
+from scipy.stats import binom  # binom 一定存在，这个是 SciPy 最基础的模块
+
+treated_y = matched_treatment['Spillover_flag'].mean()
+control_y = matched_control['Spillover_flag'].mean()
+diff = treated_y - control_y
+
+print(f"\n=== 匹配后处理效应 ===")
+print(f"处理组投诉率: {treated_y:.3f}")
+print(f"对照组投诉率: {control_y:.3f}")
+print(f"差异 (ATT): {diff:.3f}")
+
+# 构建配对四格表的四个格子
+a = ((matched_treatment['Spillover_flag'] == 0) & (matched_control['Spillover_flag'] == 0)).sum()
+b = ((matched_treatment['Spillover_flag'] == 0) & (matched_control['Spillover_flag'] == 1)).sum()
+c = ((matched_treatment['Spillover_flag'] == 1) & (matched_control['Spillover_flag'] == 0)).sum()
+d = ((matched_treatment['Spillover_flag'] == 1) & (matched_control['Spillover_flag'] == 1)).sum()
+
+print(f"\n配对四格表：")
+print(f"         对照组未投诉  对照组投诉")
+print(f"处理组未投诉    {a}          {b}")
+print(f"处理组投诉      {c}          {d}")
+
+# McNemar 检验只关注不一致的对子（b 和 c）
+n = b + c  # 不一致对子的总数
+if n == 0:
+    print("警告：没有不一致的对子，无法计算 McNemar 检验 p 值")
+else:
+    # 精确双侧检验：在零假设下（b 和 c 等概率），P 值 = 2 * P(X <= min(b, c))
+    # 其中 X ~ Binomial(n, 0.5)
+    k = min(b, c)
+    # 计算累积概率（双侧）
+    p_value = 2 * binom.cdf(k, n, 0.5)
+    # 如果 k 超过了 n/2，binom.cdf 会大于 0.5，导致 p_value > 1，需修正
+    if p_value > 1:
+        p_value = 2 * (1 - binom.cdf(k - 1, n, 0.5))
+
+    print(f"\nMcNemar 精确检验 p 值: {p_value:.4f} {'（显著）' if p_value < 0.05 else '（不显著）'}")
+# ==================== 8. 保存匹配结果 ====================
+output_path = r"匹配结果_带卡尺3.xlsx"
+matched_df.to_excel(output_path, index=False)
+print(f"\n匹配结果已保存至 {output_path}")
+
+
+
+
+#Light_GBM Code 
+
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
+import warnings
+import os
+
+warnings.filterwarnings('ignore')
+
+OUTPUT_DIR = r"\实验数据"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# 读取全样本
+file_path = r"基础数据_中介实验.xlsx"
+df = pd.read_excel(file_path)
+
+print("全样本量:", len(df))
+print("正样本（投诉）:", df['Spillover_flag'].sum(), f"占比: {df['Spillover_flag'].mean():.2%}")
+
+# 特征集
+p_cols = ['Neuroticism', 'Conscientiousness', 'Agreeableness']
+e_cols = ['L1_attitude', 'L2_friend', 'L3_family', 'L4_work', 'L5_visit', 'L6_lawsuit', 'collection_freq_level']
+
+X_A1 = df[p_cols].copy()
+X_A2 = df[e_cols].copy()
+X_A3 = df[p_cols + e_cols].copy()
+y = df['Spillover_flag'].copy()
+
+# 训练函数
+def train_model(X, y, model_name):
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42, stratify=y
+    )
+    print(f"\n{model_name} | 训练集: {len(X_train)}, 测试集: {len(X_test)}")
+    model = lgb.LGBMClassifier(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=5,
+        num_leaves=31,
+        min_child_samples=20,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        class_weight='balanced',
+        random_state=42,
+        verbose=-1
+    )
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_test, y_test)],
+        callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)]
+    )
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+    return {
+        'model_name': model_name,
+        'f1': f1_score(y_test, y_pred),
+        'precision': precision_score(y_test, y_pred),
+        'recall': recall_score(y_test, y_pred),
+        'auc': roc_auc_score(y_test, y_prob)
+    }
+
+# 运行
+results = [
+    train_model(X_A1, y, "A1_仅人格"),
+    train_model(X_A2, y, "A2_仅环境"),
+    train_model(X_A3, y, "A3_人格+环境")
+]
+
+# 汇总
+summary = pd.DataFrame([{
+    '模型': r['model_name'],
+    'F1': round(r['f1'], 4),
+    'Precision': round(r['precision'], 4),
+    'Recall': round(r['recall'], 4),
+    'AUC': round(r['auc'], 4)
+} for r in results])
+
+print("\n" + "="*60)
+print("勒温公式验证结果（全样本）")
+print("="*60)
+print(summary.to_string(index=False))
+
+# 保存
+summary.to_excel(os.path.join(OUTPUT_DIR, '勒温公式_全样本.xlsx'), index=False)
+print(f"\n结果已保存至: {OUTPUT_DIR}")
