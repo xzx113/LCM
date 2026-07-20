@@ -569,7 +569,7 @@ print(f"\n匹配结果已保存至 {output_path}")
 
 
 
-#Light_GBM Code 
+#Light_GBM Code1 
 
 import pandas as pd
 import numpy as np
@@ -656,4 +656,130 @@ print(summary.to_string(index=False))
 
 # 保存
 summary.to_excel(os.path.join(OUTPUT_DIR, '勒温公式_全样本.xlsx'), index=False)
+print(f"\n结果已保存至: {OUTPUT_DIR}")
+
+
+
+
+
+#Light_GBM Code2 
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
+import warnings
+import os
+
+warnings.filterwarnings('ignore')
+
+OUTPUT_DIR = r"Your file path"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# 读取数据
+file_path = r"Your file path"
+df = pd.read_excel(file_path)
+
+print(f"全样本量: {len(df)}")
+print(f"正样本（投诉）: {df['Spillover_flag'].sum()}，占比: {df['Spillover_flag'].mean():.2%}")
+
+# 特征列
+p_cols = ['Neuroticism', 'Conscientiousness', 'Agreeableness']
+e_cols = ['L1_attitude', 'L2_friend', 'L3_family', 'L4_work', 'L5_visit', 'L6_lawsuit', 'collection_freq_level']
+
+# 实验特征集
+X_A3 = df[p_cols + e_cols].copy()
+X_B1 = df[p_cols + e_cols + ['sensitive_word_density']].copy()
+X_B2 = df[p_cols + e_cols + ['ADJ_Ratio', 'SV_Ratio']].copy()
+X_B3 = df[p_cols + e_cols + ['sensitive_word_density', 'ADJ_Ratio', 'SV_Ratio']].copy()
+
+y = df['Spillover_flag'].copy()
+
+print(f"\n特征数量：")
+print(f"  A3 (基线): {X_A3.shape[1]}")
+print(f"  B1 (+敏感词): {X_B1.shape[1]}")
+print(f"  B2 (+LCM抽象): {X_B2.shape[1]}")
+print(f"  B3 (+敏感词+LCM): {X_B3.shape[1]}")
+
+def train_model(X, y, model_name):
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42, stratify=y
+    )
+    print(f"\n{model_name} | 训练集: {len(X_train)}, 测试集: {len(X_test)}")
+    model = lgb.LGBMClassifier(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=5,
+        num_leaves=31,
+        min_child_samples=20,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        class_weight='balanced',
+        random_state=42,
+        verbose=-1
+    )
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_test, y_test)],
+        callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)]
+    )
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+    return {
+        'model_name': model_name,
+        'f1': f1_score(y_test, y_pred),
+        'precision': precision_score(y_test, y_pred),
+        'recall': recall_score(y_test, y_pred),
+        'auc': roc_auc_score(y_test, y_prob),
+        'model': model,
+        'feature_names': X.columns.tolist()
+    }
+
+# 实验A：勒温公式
+print("\n" + "="*60)
+print("实验A：勒温公式预测能力验证")
+print("="*60)
+results_A = [
+    train_model(df[p_cols], y, "A1_仅人格"),
+    train_model(df[e_cols], y, "A2_仅环境"),
+    train_model(X_A3, y, "A3_人格+环境")
+]
+
+# 实验B：语言特征增量
+print("\n" + "="*60)
+print("实验B：语言特征增量验证")
+print("="*60)
+results_B = [
+    train_model(X_A3, y, "A3_基线"),
+    train_model(X_B1, y, "B1_+敏感词"),
+    train_model(X_B2, y, "B2_+LCM抽象"),
+    train_model(X_B3, y, "B3_+敏感词+LCM")
+]
+
+# 汇总
+summary_A = pd.DataFrame([{
+    '模型': r['model_name'],
+    'F1': round(r['f1'], 4),
+    'Precision': round(r['precision'], 4),
+    'Recall': round(r['recall'], 4),
+    'AUC': round(r['auc'], 4)
+} for r in results_A])
+
+summary_B = pd.DataFrame([{
+    '模型': r['model_name'],
+    'F1': round(r['f1'], 4),
+    'Precision': round(r['precision'], 4),
+    'Recall': round(r['recall'], 4),
+    'AUC': round(r['auc'], 4)
+} for r in results_B])
+
+print("\n实验A结果：")
+print(summary_A.to_string(index=False))
+print("\n实验B结果：")
+print(summary_B.to_string(index=False))
+
+# 保存
+summary_A.to_excel(os.path.join(OUTPUT_DIR, '实验A_勒温公式.xlsx'), index=False)
+summary_B.to_excel(os.path.join(OUTPUT_DIR, '实验B_语言增量.xlsx'), index=False)
 print(f"\n结果已保存至: {OUTPUT_DIR}")
