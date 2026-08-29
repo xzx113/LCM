@@ -356,6 +356,203 @@ if __name__ == "__main__":
 
 
 
+
+
+
+#Code for LLM-based personality measurement
+
+import pandas as pd
+from openai import OpenAI
+import time
+import re
+
+# ===================== 通用配置 =====================
+# 文本最大长度
+MAX_TEXT_LENGTH = 2048
+# 模型重试次数
+RETRY_TIMES = 3
+# 请求间隔
+SLEEP_TIME = 0.3
+
+# ===================== API 配置 =====================
+API_KEY = "YOUR_API_KEY"
+BASE_URL = " BASE_URL "
+MODEL_NAME = "qwen-turbo"  
+
+client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+
+# ===================== 量表题目 =====================
+neuro_items = [
+    "我是一个容易忧虑的人。", "有时候我感到愤怒，充满怨恨。",
+    "当面对极大的压力时，有时我会感到好像就要垮了似的。", "我经常感到紧张而心神不定。",
+    "有时我感到自己完全一文不值。", "别人对待我的方式常使我感到愤怒。",
+    "很多时候，当事情不顺利时，我会感到泄气，想要放弃。", "我经常感觉无助，希望有人能帮助我解决问题。",
+    "有时我会感到十分羞愧，以至于只想躲起来，不见任何人。", "我经常感觉孤独和忧郁。",
+    "我经常感到恐惧或焦虑。", "我经常感觉忧伤或沮丧。",
+]
+
+cons_items = [
+    "我让自己的物品经常保持整洁干净。", "我比较擅长为自己安排好做事进度，以便按时完成任务。",
+    "我总能提前做好准备。", "我会尽量认真地完成一切分派给我的任务。",
+    "我有一些明确的目标，并能以有条不紊的方式朝它迈进。", "我从不浪费学习或工作前的时间。",
+    "我努力做事以达到自己的目标。", "一旦做出承诺，我通常会贯彻到底。",
+    "我是一个可靠和值得信赖的人。", "我做事情总是善始善终，是一个很有做事能力的人。",
+    "我能把事情安排得井井有条。", "对于每件事，我都力求做到最好。",
+]
+
+# ===================== 权重词库 =====================
+weights_300_1000 = {
+    "12378": 10.000000, "信访": 4.552033, "投诉": 3.712894, "威胁": 3.540967,
+    "监管": 2.731418, "派出所": 2.495203, "工信部": 2.434305, "包庇": 2.248811,
+    "激动": 1.843026, "打官司": 1.765418, "侮辱": 1.762642, "追究": 1.532741,
+    "警方": 1.265524, "倒闭": 1.000000,
+}
+
+weights_full = {
+    "12378": 10.000000, "信访": 9.591123, "投诉": 8.049261, "国家信访局": 7.120878,
+    "威胁": 6.870055, "监管": 6.799309, "银监会": 6.472933, "压力": 6.441128,
+    "包庇": 6.248459, "违法": 6.207510, "激动": 6.081495, "侮辱": 6.024751,
+    "倒闭": 5.935000, "打官司": 5.861862, "警方": 5.829182, "派出所": 5.761119,
+    "逼死": 5.755057, "工信部": 5.679794, "快手": 5.656865, "平复": 5.645116,
+}
+
+# ===================== 核心工具函数 =====================
+def split_overlong_text(text: str, max_len: int = MAX_TEXT_LENGTH) -> str:
+    """
+    自动切分超长文本 
+    """
+    text = str(text).strip()
+    if len(text) <= max_len:
+        return text
+    # 超长则截断，保留前max_len字符
+    return text[:max_len]
+
+def get_weights_by_length(text: str) -> dict:
+    word_count = len(text)
+    return weights_300_1000 if word_count <= 1000 else weights_full
+
+def format_weights_text(weights: dict) -> str:
+    sorted_items = sorted(weights.items(), key=lambda x: x[1], reverse=True)
+    return "\n".join([f"- {word}（权重 {round(weight, 1)}）" for word, weight in sorted_items])
+
+def clean_response(res: str) -> str:
+    """清洗模型响应，去除标点、空格、特殊字符"""
+    return re.sub(r'[^\u4e00-\u9fa5]', '', res.strip())
+
+def map_score(response: str) -> int:
+    """将文本响应映射为分数"""
+    option_map = {
+        "非常不同意": 1, "不同意": 2, "中立": 3, "同意": 4, "非常同意": 5
+    }
+    return option_map.get(response, 3)  # 默认中立
+
+# ===================== 评分函数 =====================
+def llm_score(text: str, item: str, is_neuro: bool) -> int:
+    """统一评分函数，神经质/尽责性二合一"""
+    text = split_overlong_text(text)  # 🔥 关键：自动处理超长文本
+    weights = get_weights_by_length(text)
+    weights_text = format_weights_text(weights)
+
+    # 神经质 Prompt
+    if is_neuro:
+        prompt = f"""你的任务是基于下方提供的客户对话文本，回答人格量表题目。请扮演客户，反映其人格特质。
+【贷后场景重点词汇权重指引】
+{weights_text}
+高权重词汇=更高神经质倾向。
+
+【评分规则】
+非常不同意/不同意/中立/同意/非常同意
+
+题目：{item}
+文本：{text}
+
+【严格指令】只输出5个选项之一，无其他内容！"""
+    # 尽责性 Prompt
+    else:
+        prompt = f"""你的任务是基于下方提供的客户对话文本，回答人格量表题目。请扮演客户，反映其人格特质。
+【贷后尽责性评估指引】
+1. 明确近期还款承诺（本月/具体日期）
+2. 主动咨询分期
+符合则高分，推诿则低分。
+
+【评分规则】
+非常不同意/不同意/中立/同意/非常同意
+
+题目：{item}
+文本：{text}
+
+【严格指令】只输出5个选项之一，无其他内容！"""
+
+    # 循环重试（替代递归，杜绝卡死）
+    for _ in range(RETRY_TIMES):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=10,
+            )
+            res = clean_response(response.choices[0].message.content)
+            return map_score(res)
+        except Exception as e:
+            print(f"评分失败，重试中... 错误：{str(e)[:50]}")
+            time.sleep(2)
+    return 3  # 最终失败返回中立分
+
+# ===================== 分数计算 =====================
+def calc_dim_score(scores):
+    avg = sum(scores) / len(scores)
+    return round(avg * 25 - 25, 2)
+
+# ===================== 主程序 =====================
+def run_dual_dimension():
+    input_file = r" /data/input.xlsx"
+    df = pd.read_excel(input_file)
+
+    if "客户ID" not in df.columns:
+        df["客户ID"] = range(1, len(df) + 1)
+
+    results = []
+    for idx, row in df.iterrows():
+        cid = row["客户ID"]
+        text1 = str(row["text1"]) if pd.notna(row["text1"]) else ""
+        text2 = str(row["text2"]) if pd.notna(row["text2"]) else ""
+
+        if len(text1.strip()) < 10 or len(text2.strip()) < 10:
+            print(f"客户{cid}文本过短，跳过")
+            continue
+
+        print(f"=== 处理客户 {cid} ===")
+
+        # 第一通对话
+        neuro_scores1 = [llm_score(text1, item, True) for item in neuro_items]
+        cons_scores1 = [llm_score(text1, item, False) for item in cons_items]
+        time.sleep(SLEEP_TIME)
+
+        # 第二通对话
+        neuro_scores2 = [llm_score(text2, item, True) for item in neuro_items]
+        cons_scores2 = [llm_score(text2, item, False) for item in cons_items]
+
+        # 计算最终分
+        neuro1, neuro2 = calc_dim_score(neuro_scores1), calc_dim_score(neuro_scores2)
+        cons1, cons2 = calc_dim_score(cons_scores1), calc_dim_score(cons_scores2)
+
+        results.append({
+            "客户ID": cid, "神经质_1": neuro1, "神经质_2": neuro2,
+            "尽责性_1": cons1, "尽责性_2": cons2,
+        })
+        print(f"  神经质: {neuro1} / {neuro2} | 尽责性: {cons1} / {cons2}")
+
+    # 保存结果
+    output_file = r" /data/input.xlsx"
+    pd.DataFrame(results).to_excel(output_file, index=False)
+    print(f"\n✅ 全部完成！结果已保存：{output_file}")
+
+if __name__ == "__main__":
+run_dual_dimension()
+
+
+
 #Code for the dose-response analysis in RQ A (three-group gradient comparison)
 
 import pandas as pd
@@ -1174,196 +1371,4 @@ print("=" * 70)
 
 
 
-
-#Code for LLM-based personality measurement
-
-import pandas as pd
-from openai import OpenAI
-import time
-import re
-
-# ===================== 通用配置 =====================
-# 文本最大长度
-MAX_TEXT_LENGTH = 2048
-# 模型重试次数
-RETRY_TIMES = 3
-# 请求间隔
-SLEEP_TIME = 0.3
-
-# ===================== API 配置 =====================
-API_KEY = "YOUR_API_KEY"
-BASE_URL = " BASE_URL "
-MODEL_NAME = "qwen-turbo"  
-
-client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
-
-# ===================== 量表题目 =====================
-neuro_items = [
-    "我是一个容易忧虑的人。", "有时候我感到愤怒，充满怨恨。",
-    "当面对极大的压力时，有时我会感到好像就要垮了似的。", "我经常感到紧张而心神不定。",
-    "有时我感到自己完全一文不值。", "别人对待我的方式常使我感到愤怒。",
-    "很多时候，当事情不顺利时，我会感到泄气，想要放弃。", "我经常感觉无助，希望有人能帮助我解决问题。",
-    "有时我会感到十分羞愧，以至于只想躲起来，不见任何人。", "我经常感觉孤独和忧郁。",
-    "我经常感到恐惧或焦虑。", "我经常感觉忧伤或沮丧。",
-]
-
-cons_items = [
-    "我让自己的物品经常保持整洁干净。", "我比较擅长为自己安排好做事进度，以便按时完成任务。",
-    "我总能提前做好准备。", "我会尽量认真地完成一切分派给我的任务。",
-    "我有一些明确的目标，并能以有条不紊的方式朝它迈进。", "我从不浪费学习或工作前的时间。",
-    "我努力做事以达到自己的目标。", "一旦做出承诺，我通常会贯彻到底。",
-    "我是一个可靠和值得信赖的人。", "我做事情总是善始善终，是一个很有做事能力的人。",
-    "我能把事情安排得井井有条。", "对于每件事，我都力求做到最好。",
-]
-
-# ===================== 权重词库 =====================
-weights_300_1000 = {
-    "12378": 10.000000, "信访": 4.552033, "投诉": 3.712894, "威胁": 3.540967,
-    "监管": 2.731418, "派出所": 2.495203, "工信部": 2.434305, "包庇": 2.248811,
-    "激动": 1.843026, "打官司": 1.765418, "侮辱": 1.762642, "追究": 1.532741,
-    "警方": 1.265524, "倒闭": 1.000000,
-}
-
-weights_full = {
-    "12378": 10.000000, "信访": 9.591123, "投诉": 8.049261, "国家信访局": 7.120878,
-    "威胁": 6.870055, "监管": 6.799309, "银监会": 6.472933, "压力": 6.441128,
-    "包庇": 6.248459, "违法": 6.207510, "激动": 6.081495, "侮辱": 6.024751,
-    "倒闭": 5.935000, "打官司": 5.861862, "警方": 5.829182, "派出所": 5.761119,
-    "逼死": 5.755057, "工信部": 5.679794, "快手": 5.656865, "平复": 5.645116,
-}
-
-# ===================== 核心工具函数 =====================
-def split_overlong_text(text: str, max_len: int = MAX_TEXT_LENGTH) -> str:
-    """
-    自动切分超长文本 
-    """
-    text = str(text).strip()
-    if len(text) <= max_len:
-        return text
-    # 超长则截断，保留前max_len字符
-    return text[:max_len]
-
-def get_weights_by_length(text: str) -> dict:
-    word_count = len(text)
-    return weights_300_1000 if word_count <= 1000 else weights_full
-
-def format_weights_text(weights: dict) -> str:
-    sorted_items = sorted(weights.items(), key=lambda x: x[1], reverse=True)
-    return "\n".join([f"- {word}（权重 {round(weight, 1)}）" for word, weight in sorted_items])
-
-def clean_response(res: str) -> str:
-    """清洗模型响应，去除标点、空格、特殊字符"""
-    return re.sub(r'[^\u4e00-\u9fa5]', '', res.strip())
-
-def map_score(response: str) -> int:
-    """将文本响应映射为分数"""
-    option_map = {
-        "非常不同意": 1, "不同意": 2, "中立": 3, "同意": 4, "非常同意": 5
-    }
-    return option_map.get(response, 3)  # 默认中立
-
-# ===================== 评分函数 =====================
-def llm_score(text: str, item: str, is_neuro: bool) -> int:
-    """统一评分函数，神经质/尽责性二合一"""
-    text = split_overlong_text(text)  # 🔥 关键：自动处理超长文本
-    weights = get_weights_by_length(text)
-    weights_text = format_weights_text(weights)
-
-    # 神经质 Prompt
-    if is_neuro:
-        prompt = f"""你的任务是基于下方提供的客户对话文本，回答人格量表题目。请扮演客户，反映其人格特质。
-【贷后场景重点词汇权重指引】
-{weights_text}
-高权重词汇=更高神经质倾向。
-
-【评分规则】
-非常不同意/不同意/中立/同意/非常同意
-
-题目：{item}
-文本：{text}
-
-【严格指令】只输出5个选项之一，无其他内容！"""
-    # 尽责性 Prompt
-    else:
-        prompt = f"""你的任务是基于下方提供的客户对话文本，回答人格量表题目。请扮演客户，反映其人格特质。
-【贷后尽责性评估指引】
-1. 明确近期还款承诺（本月/具体日期）
-2. 主动咨询分期
-符合则高分，推诿则低分。
-
-【评分规则】
-非常不同意/不同意/中立/同意/非常同意
-
-题目：{item}
-文本：{text}
-
-【严格指令】只输出5个选项之一，无其他内容！"""
-
-    # 循环重试（替代递归，杜绝卡死）
-    for _ in range(RETRY_TIMES):
-        try:
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=10,
-            )
-            res = clean_response(response.choices[0].message.content)
-            return map_score(res)
-        except Exception as e:
-            print(f"评分失败，重试中... 错误：{str(e)[:50]}")
-            time.sleep(2)
-    return 3  # 最终失败返回中立分
-
-# ===================== 分数计算 =====================
-def calc_dim_score(scores):
-    avg = sum(scores) / len(scores)
-    return round(avg * 25 - 25, 2)
-
-# ===================== 主程序 =====================
-def run_dual_dimension():
-    input_file = r" /data/input.xlsx"
-    df = pd.read_excel(input_file)
-
-    if "客户ID" not in df.columns:
-        df["客户ID"] = range(1, len(df) + 1)
-
-    results = []
-    for idx, row in df.iterrows():
-        cid = row["客户ID"]
-        text1 = str(row["text1"]) if pd.notna(row["text1"]) else ""
-        text2 = str(row["text2"]) if pd.notna(row["text2"]) else ""
-
-        if len(text1.strip()) < 10 or len(text2.strip()) < 10:
-            print(f"客户{cid}文本过短，跳过")
-            continue
-
-        print(f"=== 处理客户 {cid} ===")
-
-        # 第一通对话
-        neuro_scores1 = [llm_score(text1, item, True) for item in neuro_items]
-        cons_scores1 = [llm_score(text1, item, False) for item in cons_items]
-        time.sleep(SLEEP_TIME)
-
-        # 第二通对话
-        neuro_scores2 = [llm_score(text2, item, True) for item in neuro_items]
-        cons_scores2 = [llm_score(text2, item, False) for item in cons_items]
-
-        # 计算最终分
-        neuro1, neuro2 = calc_dim_score(neuro_scores1), calc_dim_score(neuro_scores2)
-        cons1, cons2 = calc_dim_score(cons_scores1), calc_dim_score(cons_scores2)
-
-        results.append({
-            "客户ID": cid, "神经质_1": neuro1, "神经质_2": neuro2,
-            "尽责性_1": cons1, "尽责性_2": cons2,
-        })
-        print(f"  神经质: {neuro1} / {neuro2} | 尽责性: {cons1} / {cons2}")
-
-    # 保存结果
-    output_file = r" /data/input.xlsx"
-    pd.DataFrame(results).to_excel(output_file, index=False)
-    print(f"\n✅ 全部完成！结果已保存：{output_file}")
-
-if __name__ == "__main__":
-run_dual_dimension()
 
