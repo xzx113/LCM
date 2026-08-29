@@ -1,45 +1,55 @@
-# LCM 
+# LCM
 
-Repository for Peer Review: Listen to their words and observe their deeds
+Repository for: *Detecting Complaint Risk from Customer Language in Financial Services*
 
-⚠️ Data Anonymization Notice (Important)
+This repository contains the complete analysis code for the manuscript, including:
 
-Due to the sensitive nature of the original text data (containing personally identifiable information and specific domain terminology), all sensitive keywords in the Regular Expression (RegEx) patterns have been replaced with the placeholder [SENSITIVE_WORD].
+- Regular expression-based feature engineering (collection intensity, frequency level, sensitive word density)
+- LLM-based Linguistic Category Model (LCM) annotation (negative adjectives and negative state verbs)
+- LLM-based personality measurement (Neuroticism, Conscientiousness, Agreeableness)
+- Dose–response analysis for RQ A (three-group gradient comparison)
+- Propensity Score Matching (PSM) analysis for RQ B (B1 and B2 specifications)
+- Matching boundary and extreme sample analysis for RQ C
+
+---
+
+## ⚠️ Data Anonymization Notice
+
+Due to the sensitive nature of the original text data (containing personally identifiable information and specific domain terminology), all sensitive keywords in the regular expression patterns have been replaced with the placeholder `[SENSITIVE_WORD]`.
 
 This measure was taken solely to ensure confidentiality during the peer-review process. The logical structure, pattern-matching algorithms, and statistical procedures remain fully intact and reproducible.
 
-Project Structure
 
-The project is divided into four main modules:
+Module Descriptions
 
-Regular Expression Matching (regex_matching.py)
+1. Regular Expression Matching (regex_matching.py)
+Extracts structured behavioral features from customer call transcripts using regular expression matching.
 
-Identifies six categories of collection behaviors (Attitude, Contacting Friends/Family/Workplace, Visits, Lawsuits).
+Key Features:
 
-Calculates the frequency level of collection attempts.
+Six-level collection intensity hierarchy (L1–L6):
 
-Computes the density of sensitive words.
+L1: Attitude problems
 
-Large Language Model Coding (LCM) (lcm_analysis.py)
+L2: Contacting friends/relatives
 
-Utilizes an LLM (ERNIE) to distinguish between Negative Adjectives (ADJ) directed at creditors and Negative State Verbs (SV) indicating emotional distress.
+L3: Contacting family members
 
-Calculates the B1B score​ based on the weighted sum of these linguistic features.
+L4: Contacting workplace
 
-Propensity Score Matching (PSM) (psm_analysis.py)
+L5: Physical visits
 
-Estimates propensity scores using a Logistic Regression model.
+L6: Lawsuit threats / legal action
 
-Performs 1:1 nearest neighbor matching with a caliper restriction.
+Collection frequency level: Maps numeric counts and fuzzy keywords to three frequency tiers (1–3)
 
-Validates covariate balance using Standardized Mean Difference (SMD).
+Sensitive word density: Counts regulatory channel mentions (e.g., "12378", "CBIRC") normalized by text length
 
-Conducts a McNemar's test to evaluate the Average Treatment Effect on the Treated (ATT).
+Input: Excel file with a Text column containing customer transcripts.
 
-Machine Learning Validation (lightgbm_validation.py)
+Output: Excel file with appended columns: L1_attitude, L2_friend, L3_family, L4_work, L5_visit, L6_lawsuit, collection_freq_level, sensitive_word_density.
 
-Uses LightGBM classifiers to validate the Lewin’s formula hypothesis.
+Note: All sensitive keywords have been replaced with [SENSITIVE_WORD] for confidentiality.
 
-Compares three models: Personality-only (P), Environment-only (E), and Personality+Environment (P+E).
 
-Environment Setup
+
