@@ -150,7 +150,7 @@ print("新增列：L1_attitude, L2_friend, L3_family, L4_work, L5_visit, L6_laws
 print(f"结果已保存至：{output_path}")
 
 
-#LCM code
+#Code for LCM-based linguistic category tagging
 
 import pandas as pd
 import json
@@ -354,7 +354,211 @@ def main():
 if __name__ == "__main__":
     main()
 
-#PSM Code
+
+
+#Code for the dose-response analysis in RQ A (three-group gradient comparison)
+
+import pandas as pd
+import numpy as np
+from scipy.stats import chi2_contingency
+from statsmodels.stats.proportion import proportion_confint
+import statsmodels.api as sm
+import math
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# ==================== 1. 读取数据 ====================
+file_path = r"XX"
+df = pd.read_excel(file_path)
+
+print("=" * 70)
+print("【效应量计算：基于信号完整性的三组对比】")
+print("=" * 70)
+
+# ==================== 2. 构造三组 ====================
+# 完整信号：三指标均>0
+# 残缺信号：至少一个>0，但不是全部>0
+# 无信号：全为0
+
+df['has_abstract'] = ((df['ADJ_Ratio'] > 0) | (df['SV_Ratio'] > 0)).astype(int)
+df['has_channel'] = (df['sensitive_word_density'] > 0).astype(int)
+
+df['signal_tier'] = '无信号'
+df.loc[(df['has_abstract'] == 1) & (df['has_channel'] == 0), 'signal_tier'] = '残缺信号(IF only)'
+df.loc[(df['has_abstract'] == 0) & (df['has_channel'] == 1), 'signal_tier'] = '残缺信号(THEN only)'
+df.loc[(df['has_abstract'] == 1) & (df['has_channel'] == 1), 'signal_tier'] = '完整信号'
+
+# 合并残缺信号为一个组（可选）
+df['signal_group'] = df['signal_tier'].replace({
+    '残缺信号(IF only)': '残缺信号',
+    '残缺信号(THEN only)': '残缺信号'
+})
+
+
+# ==================== 3. 辅助函数 ====================
+def cohens_h(p1, p2):
+    if p1 == p2:
+        return 0.0
+    h1 = 2 * math.asin(math.sqrt(p1))
+    h2 = 2 * math.asin(math.sqrt(p2))
+    return h1 - h2
+
+
+def risk_ratio(p1, p2):
+    if p2 == 0:
+        return np.nan
+    return p1 / p2
+
+
+def risk_difference_ci(p1, n1, p2, n2, alpha=0.05):
+    ci1_low, ci1_high = proportion_confint(int(n1 * p1), n1, alpha=alpha, method='wilson')
+    ci2_low, ci2_high = proportion_confint(int(n2 * p2), n2, alpha=alpha, method='wilson')
+    se = np.sqrt((ci1_high - ci1_low) ** 2 / 4 + (ci2_high - ci2_low) ** 2 / 4)
+    diff = p1 - p2
+    z = 1.96
+    return diff, diff - z * se, diff + z * se
+
+
+# ==================== 4. 分组统计 ====================
+tier_order = ['无信号', '残缺信号', '完整信号']
+summary = []
+for tier in tier_order:
+    group = df[df['signal_group'] == tier]
+    n = len(group)
+    complaints = group['Spillover_flag'].sum()
+    p = group['Spillover_flag'].mean()
+    ci_low, ci_high = proportion_confint(complaints, n, alpha=0.05, method='wilson')
+    summary.append({
+        'tier': tier,
+        'n': n,
+        'complaints': complaints,
+        'p': p,
+        'ci_low': ci_low,
+        'ci_high': ci_high
+    })
+
+print("\n【三组原始统计】")
+print("-" * 70)
+print(f"{'信号组':<12} {'样本量':>10} {'投诉数':>10} {'投诉率':>12} {'95% CI':>20}")
+print("-" * 70)
+for s in summary:
+    ci_str = f"({s['ci_low']:.3f}, {s['ci_high']:.3f})"
+    print(f"{s['tier']:<12} {s['n']:>10} {s['complaints']:>10} {s['p']:>12.3f} {ci_str:>20}")
+
+# ==================== 5. 两两对比 ====================
+print("\n" + "=" * 70)
+print("【两两对比】")
+print("=" * 70)
+
+comparisons = [
+    ('无信号', '残缺信号'),
+    ('残缺信号', '完整信号'),
+    ('无信号', '完整信号')
+]
+
+results = []
+for tier1, tier2 in comparisons:
+    g1 = df[df['signal_group'] == tier1]
+    g2 = df[df['signal_group'] == tier2]
+
+    n1, n2 = len(g1), len(g2)
+    p1, p2 = g1['Spillover_flag'].mean(), g2['Spillover_flag'].mean()
+
+    rr_high_vs_low = risk_ratio(p2, p1) if p1 > 0 else np.nan
+    diff, diff_low, diff_high = risk_difference_ci(p1, n1, p2, n2)
+    h = cohens_h(p1, p2)
+
+    results.append({
+        '对比': f"{tier1} → {tier2}",
+        'p1': p1, 'n1': n1,
+        'p2': p2, 'n2': n2,
+        '风险差': diff,
+        '风险差CI_low': diff_low,
+        '风险差CI_high': diff_high,
+        '风险比_RR': rr_high_vs_low,
+        'cohens_h': h
+    })
+
+print(
+    f"\n{'对比':<20} {'投诉率1':>12} {'投诉率2':>12} {'风险差':>12} {'95% CI':>20} {'风险比(RR)':>12} {'Cohen_h':>12}")
+print("-" * 105)
+for r in results:
+    ci_str = f"({r['风险差CI_low']:.3f}, {r['风险差CI_high']:.3f})"
+    print(
+        f"{r['对比']:<20} {r['p1']:>12.3f} {r['p2']:>12.3f} {r['风险差']:>12.3f} {ci_str:>20} {r['风险比_RR']:>12.3f} {r['cohens_h']:>12.3f}")
+
+# ==================== 6. 卡方趋势检验 ====================
+print("\n" + "=" * 70)
+print("【剂量-反应趋势检验】")
+print("=" * 70)
+
+order_map = {'无信号': 0, '残缺信号': 1, '完整信号': 2}
+df['signal_ordinal'] = df['signal_group'].map(order_map)
+
+X_trend = df[['signal_ordinal']].values
+X_trend = sm.add_constant(X_trend)
+model_trend = sm.Logit(df['Spillover_flag'], X_trend).fit(disp=False)
+
+print(f"趋势检验（有序0→1→2，Logistic回归）：")
+print(f"  系数: {model_trend.params[1]:.4f}")
+print(f"  p值: {model_trend.pvalues[1]:.6f}")
+print("  ✅ 投诉率随信号完整性呈单调递增趋势（显著）" if model_trend.pvalues[1] < 0.05 else "  ⚠️ 趋势不显著")
+
+# ==================== 7. 汇总（论文可直接引用） ====================
+print("\n" + "=" * 70)
+print("【论文可直接引用的结果】")
+print("=" * 70)
+
+no_signal = df[df['signal_group'] == '无信号']
+partial = df[df['signal_group'] == '残缺信号']
+full = df[df['signal_group'] == '完整信号']
+
+p_none, p_partial, p_full = no_signal['Spillover_flag'].mean(), partial['Spillover_flag'].mean(), full[
+    'Spillover_flag'].mean()
+n_none, n_partial, n_full = len(no_signal), len(partial), len(full)
+
+ci_low_none, ci_high_none = proportion_confint(no_signal['Spillover_flag'].sum(), n_none, method='wilson')
+ci_low_partial, ci_high_partial = proportion_confint(partial['Spillover_flag'].sum(), n_partial, method='wilson')
+ci_low_full, ci_high_full = proportion_confint(full['Spillover_flag'].sum(), n_full, method='wilson')
+
+print(f"\n无信号组: {p_none:.3f} (95% CI: {ci_low_none:.3f}-{ci_high_none:.3f})")
+print(f"残缺信号组: {p_partial:.3f} (95% CI: {ci_low_partial:.3f}-{ci_high_partial:.3f})")
+print(f"完整信号组: {p_full:.3f} (95% CI: {ci_low_full:.3f}-{ci_high_full:.3f})")
+
+# 风险比及CI（完整 vs 无信号）
+rr = p_full / p_none if p_none > 0 else np.nan
+if not np.isnan(rr) and rr > 0:
+    log_rr = math.log(rr)
+    se_log_rr = math.sqrt(
+        1 / full['Spillover_flag'].sum() - 1 / n_full + 1 / no_signal['Spillover_flag'].sum() - 1 / n_none)
+    rr_ci_low = math.exp(log_rr - 1.96 * se_log_rr)
+    rr_ci_high = math.exp(log_rr + 1.96 * se_log_rr)
+    print(f"\n风险比（完整 vs 无信号）: {rr:.2f} 倍 (95% CI: {rr_ci_low:.2f} - {rr_ci_high:.2f})")
+else:
+    print("\n风险比无法计算（某组投诉率为0或负值）")
+
+# ==================== 8. 导出结果到Excel ====================
+output_path = r"XX"
+with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+    summary_df = pd.DataFrame(summary)
+    summary_df.to_excel(writer, sheet_name='三组统计', index=False)
+
+    results_df = pd.DataFrame(results)
+    results_df.to_excel(writer, sheet_name='两两对比', index=False)
+
+    df[['signal_tier', 'signal_group', 'Spillover_flag']].to_excel(writer, sheet_name='分组标签', index=False)
+
+print(f"\n结果已导出至: {output_path}")
+print("\n" + "=" * 70)
+print("✅ 分析完成！以上效应量可直接用于论文。")
+print("注：Cohen's d已被替换为Risk Ratio + Risk Difference + Cohen's h")
+print("=" * 70)
+
+
+
+#Code for propensity score matching (PSM) analysis
+
 
 import pandas as pd
 import numpy as np
@@ -366,20 +570,22 @@ import statsmodels.api as sm
 import matplotlib.pyplot as plt
 import warnings
 from statsmodels.stats.proportion import proportion_confint
+
 warnings.filterwarnings('ignore')
 
 # ============================================================
 # 1. 数据读取与变量定义
 # ============================================================
-file_path = r"storage path"
+file_path = r"XX"
 df = pd.read_excel(file_path)
 
 df['treatment'] = ((df['sensitive_word_density'] > 0) &
                    ((df['ADJ_Ratio'] > 0) | (df['SV_Ratio'] > 0))).astype(int)
 
-covariates = ['Neuroticism', 'Conscientiousness', 'Agreeableness', 'L1_attitude', 'L2_friend', 'L3_family', 'L4_work',
-              'L5_visit', 'L6_lawsuit', 'collection_freq_level'
-              ]
+covariates = ['Neuroticism', 'Conscientiousness', 'Agreeableness',
+              
+              ]# 'L1_attitude', 'L2_friend', 'L3_family', 'L4_work',
+                # 'L5_visit', 'L6_lawsuit', 'collection_freq_level'
 
 print("=" * 70)
 print("【样本概况】")
@@ -388,6 +594,12 @@ print(f"总样本量: {len(df)}")
 print(f"处理组（完整信号）: {df['treatment'].sum()}")
 print(f"对照组: {len(df) - df['treatment'].sum()}")
 print(f"全样本投诉率: {df['Spillover_flag'].mean():.3f}")
+
+# ===== 新增：匹配前处理组/对照组投诉率 =====
+treatment_before_rate = df[df['treatment'] == 1]['Spillover_flag'].mean()
+control_before_rate = df[df['treatment'] == 0]['Spillover_flag'].mean()
+print(f"处理组匹配前投诉率: {treatment_before_rate:.3f} ({treatment_before_rate * 100:.1f}%)")
+print(f"对照组匹配前投诉率: {control_before_rate:.3f} ({control_before_rate * 100:.1f}%)")
 
 # ============================================================
 # 2. 倾向得分估计
@@ -401,7 +613,8 @@ ps_model = LogisticRegression(max_iter=1000, random_state=42)
 ps_model.fit(X_scaled, y)
 df['ps'] = ps_model.predict_proba(X_scaled)[:, 1]
 df['ps_logit'] = np.log(df['ps'] / (1 - df['ps'] + 1e-8))
-
+print(f"ps_logit标准差: {df['ps_logit'].std():.4f}")
+print(f"卡尺值 (Logit尺度的0.2倍): {0.2 * df['ps_logit'].std():.4f}")
 # ============================================================
 # 3. PSM匹配（使用 ps_logit）
 # ============================================================
@@ -441,6 +654,7 @@ matched_df = pd.concat([matched_treatment, matched_control], ignore_index=True)
 print(f"\n成功匹配: {len(matched_pairs)} 对")
 print(f"丢弃处理组: {len(discarded_treatment)} 例")
 
+
 # ============================================================
 # 4. SMD平衡性检验
 # ============================================================
@@ -456,19 +670,32 @@ def compute_smd(df, treatment_col, cols):
             smd_dict[col] = abs((m1 - m2) / pooled) if pooled > 0 else 0
     return smd_dict
 
+
 smd_before = compute_smd(df, 'treatment', covariates)
 smd_after = compute_smd(matched_df, 'treatment', covariates)
 
 print("\n" + "=" * 70)
 print("【表E】SMD平衡性检验")
 print("=" * 70)
-print(f"{'协变量':<25} {'匹配前SMD':>12} {'匹配后SMD':>12} {'改善':>12}")
-print("-" * 65)
+print(f"{'协变量':<25} {'匹配前SMD':>12} {'匹配后SMD':>12} {'改善':>12} {'匹配前方差比':>14} {'匹配后方差比':>14}")
+print("-" * 85)
 smd_table = []  # 用于导出
 for c in covariates:
     b, a = smd_before.get(c, 0), smd_after.get(c, 0)
-    print(f"{c:<25} {b:>12.3f} {a:>12.3f} {b-a:>12.3f}")
-    smd_table.append({'协变量': c, '匹配前SMD': b, '匹配后SMD': a, '改善': b-a})
+
+    # 计算方差比（处理组方差 / 对照组方差）
+    var_before = df[df['treatment'] == 1][c].var() / df[df['treatment'] == 0][c].var()
+    var_after = matched_df[matched_df['treatment'] == 1][c].var() / matched_df[matched_df['treatment'] == 0][c].var()
+
+    print(f"{c:<25} {b:>12.3f} {a:>12.3f} {b - a:>12.3f} {var_before:>14.3f} {var_after:>14.3f}")
+    smd_table.append({
+        '协变量': c,
+        '匹配前SMD': b,
+        '匹配后SMD': a,
+        '改善': b - a,
+        '匹配前方差比': var_before,
+        '匹配后方差比': var_after
+    })
 
 max_smd = max(smd_after.values()) if smd_after else 0
 print(f"\n匹配后最大SMD: {max_smd:.3f} {'✅ 达标' if max_smd < 0.1 else '⚠️ 未达标'}")
@@ -489,9 +716,72 @@ print(f"共同支撑区间: [{overlap_lower:.4f}, {overlap_upper:.4f}]")
 
 outside_t = treatment_df[(treatment_df['ps'] < overlap_lower) | (treatment_df['ps'] > overlap_upper)]
 outside_c = control_df[(control_df['ps'] < overlap_lower) | (control_df['ps'] > overlap_upper)]
-print(f"处理组在支撑外: {len(outside_t)} 例 ({len(outside_t)/len(treatment_df)*100:.1f}%)")
-print(f"对照组在支撑外: {len(outside_c)} 例 ({len(outside_c)/len(control_df)*100:.1f}%)")
+print(f"处理组在支撑外: {len(outside_t)} 例 ({len(outside_t) / len(treatment_df) * 100:.1f}%)")
+print(f"对照组在支撑外: {len(outside_c)} 例 ({len(outside_c) / len(control_df) * 100:.1f}%)")
+print("\n" + "=" * 70)
+print("【表C-2】匹配前处理组与对照组PS分布重叠统计量")
+print("=" * 70)
 
+# 计算处理组和对照组的PS分布统计量
+ps_t_stats = {
+    '均值': ps_t.mean(),
+    '标准差': ps_t.std(),
+    '最小值': ps_t.min(),
+    '25%分位数': ps_t.quantile(0.25),
+    '中位数': ps_t.median(),
+    '75%分位数': ps_t.quantile(0.75),
+    '最大值': ps_t.max()
+}
+
+ps_c_stats = {
+    '均值': ps_c.mean(),
+    '标准差': ps_c.std(),
+    '最小值': ps_c.min(),
+    '25%分位数': ps_c.quantile(0.25),
+    '中位数': ps_c.median(),
+    '75%分位数': ps_c.quantile(0.75),
+    '最大值': ps_c.max()
+}
+
+# 构建DataFrame
+overlap_stats = pd.DataFrame({
+    '统计量': list(ps_t_stats.keys()),
+    '处理组': [f"{v:.4f}" for v in ps_t_stats.values()],
+    '对照组': [f"{v:.4f}" for v in ps_c_stats.values()]
+})
+
+# 计算差异（处理组 - 对照组）
+diffs = []
+for key in ps_t_stats.keys():
+    diff = ps_t_stats[key] - ps_c_stats[key]
+    diffs.append(f"{diff:.4f}")
+overlap_stats['差异'] = diffs
+
+print(overlap_stats.to_string(index=False))
+
+# 额外报告：25%-75%分位数区间的重叠情况
+q1_t, q3_t = ps_t.quantile(0.25), ps_t.quantile(0.75)
+q1_c, q3_c = ps_c.quantile(0.25), ps_c.quantile(0.75)
+
+# 计算两个IQR区间的重叠区间长度
+iqr_overlap_lower = max(q1_t, q1_c)
+iqr_overlap_upper = min(q3_t, q3_c)
+iqr_overlap_length = max(0, iqr_overlap_upper - iqr_overlap_lower)
+
+# 处理组的IQR长度
+iqr_t_length = q3_t - q1_t
+iqr_c_length = q3_c - q1_c
+
+# 重叠比例（相对于处理组的IQR）
+overlap_ratio_t = iqr_overlap_length / iqr_t_length if iqr_t_length > 0 else 0
+overlap_ratio_c = iqr_overlap_length / iqr_c_length if iqr_c_length > 0 else 0
+
+print(f"\n处理组IQR区间: [{q1_t:.4f}, {q3_t:.4f}]")
+print(f"对照组IQR区间: [{q1_c:.4f}, {q3_c:.4f}]")
+print(f"IQR重叠区间: [{iqr_overlap_lower:.4f}, {iqr_overlap_upper:.4f}]")
+print(f"IQR重叠长度: {iqr_overlap_length:.4f}")
+print(f"重叠占处理组IQR比例: {overlap_ratio_t * 100:.1f}%")
+print(f"重叠占对照组IQR比例: {overlap_ratio_c * 100:.1f}%")
 # ============================================================
 # 6. 共同支撑图
 # ============================================================
@@ -511,9 +801,9 @@ ax.set_ylabel('Density', fontsize=14, fontweight='bold')
 ax.set_title('Common Support Domain Before Matching', fontsize=16, fontweight='bold')
 ax.legend(fontsize=12, framealpha=0.9)
 ax.grid(alpha=0.3, linestyle=':')
-plt.savefig(r"storage path",
+plt.savefig(r"XX",
             format='pdf', bbox_inches='tight', dpi=300)
-plt.savefig(r"storage path",
+plt.savefig(r"XX",
             dpi=300, bbox_inches='tight')
 plt.show()
 print("\n共同支撑图已保存")
@@ -531,7 +821,7 @@ for var in desc_vars:
     if var in discarded_treatment.columns and var in matched_treatment.columns:
         dm, ds = discarded_treatment[var].mean(), discarded_treatment[var].std()
         mm, ms = matched_treatment[var].mean(), matched_treatment[var].std()
-        print(f"{var:<25} {dm:>12.3f} {ds:>12.3f} {mm:>12.3f} {ms:>12.3f} {dm-mm:>12.3f}")
+        print(f"{var:<25} {dm:>12.3f} {ds:>12.3f} {mm:>12.3f} {ms:>12.3f} {dm - mm:>12.3f}")
 
 print(f"\n丢弃组投诉率: {discarded_treatment['Spillover_flag'].mean():.3f}")
 print(f"匹配组投诉率: {matched_treatment['Spillover_flag'].mean():.3f}")
@@ -562,6 +852,8 @@ a = ((matched_treatment['Spillover_flag'] == 0) & (matched_control['Spillover_fl
 b = ((matched_treatment['Spillover_flag'] == 0) & (matched_control['Spillover_flag'] == 1)).sum()
 c = ((matched_treatment['Spillover_flag'] == 1) & (matched_control['Spillover_flag'] == 0)).sum()
 d = ((matched_treatment['Spillover_flag'] == 1) & (matched_control['Spillover_flag'] == 1)).sum()
+
+
 # ============================================================
 # 9b. ATT的Bootstrap置信区间
 # ============================================================
@@ -578,6 +870,7 @@ def bootstrap_att(treatment_out, control_out, n_bootstrap=1000, seed=42):
     upper = np.percentile(atts, 97.5)
     return lower, upper, atts
 
+
 att_lower, att_upper, att_bootstrap = bootstrap_att(
     matched_treatment['Spillover_flag'].values,
     matched_control['Spillover_flag'].values,
@@ -588,9 +881,9 @@ print(f"\nATT的95% Bootstrap置信区间: [{att_lower:.4f}, {att_upper:.4f}]")
 print("\n" + "=" * 70)
 print("【表F】匹配后处理效应 (ATT)")
 print("=" * 70)
-print(f"处理组投诉率: {treated_y:.3f} ({treated_y*100:.1f}%)")
-print(f"对照组投诉率: {control_y:.3f} ({control_y*100:.1f}%)")
-print(f"ATT: {att:.3f} ({att*100:.1f} 个百分点)")
+print(f"处理组投诉率: {treated_y:.3f} ({treated_y * 100:.1f}%)")
+print(f"对照组投诉率: {control_y:.3f} ({control_y * 100:.1f}%)")
+print(f"ATT: {att:.3f} ({att * 100:.1f} 个百分点)")
 print(f"\n配对四格表:")
 print(f"                对照组未投诉  对照组投诉")
 print(f"处理组未投诉      {a:>8}      {b:>8}")
@@ -611,6 +904,8 @@ else:
 # 10. Rosenbaum敏感性分析（表D）
 # ============================================================
 gamma_values = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
+
+
 def rosenbaum_sensitivity(t_out, c_out, gamma_values):
     diffs = t_out - c_out
     n = len(diffs)
@@ -633,6 +928,7 @@ def rosenbaum_sensitivity(t_out, c_out, gamma_values):
         results.append({'gamma': gamma, 'p_upper': p_upper})
     return results
 
+
 sens_results = rosenbaum_sensitivity(
     matched_treatment['Spillover_flag'].values,
     matched_control['Spillover_flag'].values,
@@ -654,6 +950,7 @@ for r in sens_results:
 df['has_abstract'] = ((df['ADJ_Ratio'] > 0) | (df['SV_Ratio'] > 0)).astype(int)
 df['has_channel'] = (df['sensitive_word_density'] > 0).astype(int)
 
+
 def assign_group(row):
     if row['has_abstract'] == 0 and row['has_channel'] == 0:
         return '无信号'
@@ -663,6 +960,7 @@ def assign_group(row):
         return 'IF only'
     else:
         return '完整信号'
+
 
 df['group'] = df.apply(assign_group, axis=1)
 
@@ -695,9 +993,9 @@ print("=" * 70)
 conc_summary = None  # 初始化
 if len(discarded_treatment) > 0:
     discarded_treatment['intent_concentration'] = (
-        discarded_treatment['ADJ_Ratio'] +
-        discarded_treatment['SV_Ratio'] +
-        discarded_treatment['sensitive_word_density']
+            discarded_treatment['ADJ_Ratio'] +
+            discarded_treatment['SV_Ratio'] +
+            discarded_treatment['sensitive_word_density']
     )
     try:
         discarded_treatment['conc_rank'] = pd.qcut(
@@ -727,8 +1025,6 @@ if len(discarded_treatment) > 0:
 else:
     print("没有丢弃样本，无法进行浓度三分位分析。")
 
-
-
 # 13. 匹配后样本四组对比（新增）
 # ============================================================
 print("\n" + "=" * 70)
@@ -739,6 +1035,7 @@ print("=" * 70)
 matched_df['has_abstract'] = ((matched_df['ADJ_Ratio'] > 0) | (matched_df['SV_Ratio'] > 0)).astype(int)
 matched_df['has_channel'] = (matched_df['sensitive_word_density'] > 0).astype(int)
 
+
 def assign_group_match(row):
     if row['has_abstract'] == 0 and row['has_channel'] == 0:
         return '无信号'
@@ -748,6 +1045,7 @@ def assign_group_match(row):
         return 'IF only'
     else:
         return '完整信号'
+
 
 matched_df['group_match'] = matched_df.apply(assign_group_match, axis=1)
 
@@ -790,7 +1088,7 @@ print(f"匹配后趋势检验（有序0→1→2→3）: 系数={model_trend_matc
 # ============================================================
 # 14. 保存所有结果到Excel
 # ============================================================
-output_path = r"C:\Users\徐泽宪\Desktop\预测模型2.0\实验数据\PSM_完整结果3（P+E).xlsx"
+output_path = r"XX"
 with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
     # 匹配后数据
     matched_df.to_excel(writer, sheet_name='匹配后数据', index=False)
@@ -798,11 +1096,40 @@ with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
     discarded_treatment.to_excel(writer, sheet_name='丢弃样本', index=False)
     # SMD表格
     pd.DataFrame(smd_table).to_excel(writer, sheet_name='SMD平衡性', index=False)
+
+    # ===== 新增：丢弃样本描述性统计（表A的Excel版本） =====
+    discard_desc = []
+    for var in desc_vars:
+        if var in discarded_treatment.columns and var in matched_treatment.columns:
+            dm, ds = discarded_treatment[var].mean(), discarded_treatment[var].std()
+            mm, ms = matched_treatment[var].mean(), matched_treatment[var].std()
+            discard_desc.append({
+                '变量': var,
+                '丢弃组均值': dm,
+                '丢弃组SD': ds,
+                '匹配组均值': mm,
+                '匹配组SD': ms,
+                '差值': dm - mm
+            })
+    discard_desc_df = pd.DataFrame(discard_desc)
+    discard_desc_df.to_excel(writer, sheet_name='丢弃样本描述性统计', index=False)
+
+    # ===== 新增：匹配后描述性统计（表B的Excel版本） =====
+    desc_matched = pd.DataFrame({
+        '变量': desc_vars,
+        '处理组均值': [matched_treatment[var].mean() for var in desc_vars if var in matched_treatment.columns],
+        '处理组SD': [matched_treatment[var].std() for var in desc_vars if var in matched_treatment.columns],
+        '对照组均值': [matched_control[var].mean() for var in desc_vars if var in matched_control.columns],
+        '对照组SD': [matched_control[var].std() for var in desc_vars if var in matched_control.columns],
+    })
+    desc_matched.to_excel(writer, sheet_name='匹配后描述性统计', index=False)
+
     # 共同支撑
     # 匹配后四组对比
     if 'ci_df' in locals():
         # 合并统计和置信区间
-        match_group_summary_export = match_group_summary.merge(ci_df[['信号类别', 'CI_low', 'CI_high']], on='信号类别', how='left')
+        match_group_summary_export = match_group_summary.merge(ci_df[['信号类别', 'CI_low', 'CI_high']], on='信号类别',
+                                                               how='left')
         match_group_summary_export.to_excel(writer, sheet_name='匹配后四组对比', index=False)
 
     common_support = pd.DataFrame({
@@ -810,10 +1137,12 @@ with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         '数值': [f"[{ps_t.min():.4f}, {ps_t.max():.4f}]",
                  f"[{ps_c.min():.4f}, {ps_c.max():.4f}]",
                  f"[{overlap_lower:.4f}, {overlap_upper:.4f}]",
-                 f"{len(outside_t)} ({len(outside_t)/len(treatment_df)*100:.1f}%)",
-                 f"{len(outside_c)} ({len(outside_c)/len(control_df)*100:.1f}%)"]
+                 f"{len(outside_t)} ({len(outside_t) / len(treatment_df) * 100:.1f}%)",
+                 f"{len(outside_c)} ({len(outside_c) / len(control_df) * 100:.1f}%)"]
     })
     common_support.to_excel(writer, sheet_name='共同支撑', index=False)
+    overlap_stats.to_excel(writer, sheet_name='PS分布重叠统计量', index=False)
+
     # ATT结果
     att_result = pd.DataFrame({
         '指标': ['处理组投诉率', '对照组投诉率', 'ATT', 'McNemar p值'],
@@ -833,11 +1162,208 @@ with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
 print(f"\n所有结果已导出至: {output_path}")
 
 # ============================================================
-# 14. 输出汇总
+# 15. 输出汇总
 # ============================================================
 print("\n" + "=" * 70)
 print("✅ PSM分析完成！所有表格已导出到Excel。")
 print("=" * 70)
 
 
+
+
+
+
+
+
+#Code for LLM-based personality measurement
+
+import pandas as pd
+from openai import OpenAI
+import time
+import re
+
+# ===================== 通用配置 =====================
+# 文本最大长度
+MAX_TEXT_LENGTH = 2048
+# 模型重试次数
+RETRY_TIMES = 3
+# 请求间隔
+SLEEP_TIME = 0.3
+
+# ===================== API 配置 =====================
+API_KEY = "YOUR_API_KEY"
+BASE_URL = " BASE_URL "
+MODEL_NAME = "qwen-turbo"  
+
+client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+
+# ===================== 量表题目 =====================
+neuro_items = [
+    "我是一个容易忧虑的人。", "有时候我感到愤怒，充满怨恨。",
+    "当面对极大的压力时，有时我会感到好像就要垮了似的。", "我经常感到紧张而心神不定。",
+    "有时我感到自己完全一文不值。", "别人对待我的方式常使我感到愤怒。",
+    "很多时候，当事情不顺利时，我会感到泄气，想要放弃。", "我经常感觉无助，希望有人能帮助我解决问题。",
+    "有时我会感到十分羞愧，以至于只想躲起来，不见任何人。", "我经常感觉孤独和忧郁。",
+    "我经常感到恐惧或焦虑。", "我经常感觉忧伤或沮丧。",
+]
+
+cons_items = [
+    "我让自己的物品经常保持整洁干净。", "我比较擅长为自己安排好做事进度，以便按时完成任务。",
+    "我总能提前做好准备。", "我会尽量认真地完成一切分派给我的任务。",
+    "我有一些明确的目标，并能以有条不紊的方式朝它迈进。", "我从不浪费学习或工作前的时间。",
+    "我努力做事以达到自己的目标。", "一旦做出承诺，我通常会贯彻到底。",
+    "我是一个可靠和值得信赖的人。", "我做事情总是善始善终，是一个很有做事能力的人。",
+    "我能把事情安排得井井有条。", "对于每件事，我都力求做到最好。",
+]
+
+# ===================== 权重词库 =====================
+weights_300_1000 = {
+    "12378": 10.000000, "信访": 4.552033, "投诉": 3.712894, "威胁": 3.540967,
+    "监管": 2.731418, "派出所": 2.495203, "工信部": 2.434305, "包庇": 2.248811,
+    "激动": 1.843026, "打官司": 1.765418, "侮辱": 1.762642, "追究": 1.532741,
+    "警方": 1.265524, "倒闭": 1.000000,
+}
+
+weights_full = {
+    "12378": 10.000000, "信访": 9.591123, "投诉": 8.049261, "国家信访局": 7.120878,
+    "威胁": 6.870055, "监管": 6.799309, "银监会": 6.472933, "压力": 6.441128,
+    "包庇": 6.248459, "违法": 6.207510, "激动": 6.081495, "侮辱": 6.024751,
+    "倒闭": 5.935000, "打官司": 5.861862, "警方": 5.829182, "派出所": 5.761119,
+    "逼死": 5.755057, "工信部": 5.679794, "快手": 5.656865, "平复": 5.645116,
+}
+
+# ===================== 核心工具函数 =====================
+def split_overlong_text(text: str, max_len: int = MAX_TEXT_LENGTH) -> str:
+    """
+    自动切分超长文本 
+    """
+    text = str(text).strip()
+    if len(text) <= max_len:
+        return text
+    # 超长则截断，保留前max_len字符
+    return text[:max_len]
+
+def get_weights_by_length(text: str) -> dict:
+    word_count = len(text)
+    return weights_300_1000 if word_count <= 1000 else weights_full
+
+def format_weights_text(weights: dict) -> str:
+    sorted_items = sorted(weights.items(), key=lambda x: x[1], reverse=True)
+    return "\n".join([f"- {word}（权重 {round(weight, 1)}）" for word, weight in sorted_items])
+
+def clean_response(res: str) -> str:
+    """清洗模型响应，去除标点、空格、特殊字符"""
+    return re.sub(r'[^\u4e00-\u9fa5]', '', res.strip())
+
+def map_score(response: str) -> int:
+    """将文本响应映射为分数"""
+    option_map = {
+        "非常不同意": 1, "不同意": 2, "中立": 3, "同意": 4, "非常同意": 5
+    }
+    return option_map.get(response, 3)  # 默认中立
+
+# ===================== 评分函数 =====================
+def llm_score(text: str, item: str, is_neuro: bool) -> int:
+    """统一评分函数，神经质/尽责性二合一"""
+    text = split_overlong_text(text)  # 🔥 关键：自动处理超长文本
+    weights = get_weights_by_length(text)
+    weights_text = format_weights_text(weights)
+
+    # 神经质 Prompt
+    if is_neuro:
+        prompt = f"""你的任务是基于下方提供的客户对话文本，回答人格量表题目。请扮演客户，反映其人格特质。
+【贷后场景重点词汇权重指引】
+{weights_text}
+高权重词汇=更高神经质倾向。
+
+【评分规则】
+非常不同意/不同意/中立/同意/非常同意
+
+题目：{item}
+文本：{text}
+
+【严格指令】只输出5个选项之一，无其他内容！"""
+    # 尽责性 Prompt
+    else:
+        prompt = f"""你的任务是基于下方提供的客户对话文本，回答人格量表题目。请扮演客户，反映其人格特质。
+【贷后尽责性评估指引】
+1. 明确近期还款承诺（本月/具体日期）
+2. 主动咨询分期
+符合则高分，推诿则低分。
+
+【评分规则】
+非常不同意/不同意/中立/同意/非常同意
+
+题目：{item}
+文本：{text}
+
+【严格指令】只输出5个选项之一，无其他内容！"""
+
+    # 循环重试（替代递归，杜绝卡死）
+    for _ in range(RETRY_TIMES):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=10,
+            )
+            res = clean_response(response.choices[0].message.content)
+            return map_score(res)
+        except Exception as e:
+            print(f"评分失败，重试中... 错误：{str(e)[:50]}")
+            time.sleep(2)
+    return 3  # 最终失败返回中立分
+
+# ===================== 分数计算 =====================
+def calc_dim_score(scores):
+    avg = sum(scores) / len(scores)
+    return round(avg * 25 - 25, 2)
+
+# ===================== 主程序 =====================
+def run_dual_dimension():
+    input_file = r" /data/input.xlsx"
+    df = pd.read_excel(input_file)
+
+    if "客户ID" not in df.columns:
+        df["客户ID"] = range(1, len(df) + 1)
+
+    results = []
+    for idx, row in df.iterrows():
+        cid = row["客户ID"]
+        text1 = str(row["text1"]) if pd.notna(row["text1"]) else ""
+        text2 = str(row["text2"]) if pd.notna(row["text2"]) else ""
+
+        if len(text1.strip()) < 10 or len(text2.strip()) < 10:
+            print(f"客户{cid}文本过短，跳过")
+            continue
+
+        print(f"=== 处理客户 {cid} ===")
+
+        # 第一通对话
+        neuro_scores1 = [llm_score(text1, item, True) for item in neuro_items]
+        cons_scores1 = [llm_score(text1, item, False) for item in cons_items]
+        time.sleep(SLEEP_TIME)
+
+        # 第二通对话
+        neuro_scores2 = [llm_score(text2, item, True) for item in neuro_items]
+        cons_scores2 = [llm_score(text2, item, False) for item in cons_items]
+
+        # 计算最终分
+        neuro1, neuro2 = calc_dim_score(neuro_scores1), calc_dim_score(neuro_scores2)
+        cons1, cons2 = calc_dim_score(cons_scores1), calc_dim_score(cons_scores2)
+
+        results.append({
+            "客户ID": cid, "神经质_1": neuro1, "神经质_2": neuro2,
+            "尽责性_1": cons1, "尽责性_2": cons2,
+        })
+        print(f"  神经质: {neuro1} / {neuro2} | 尽责性: {cons1} / {cons2}")
+
+    # 保存结果
+    output_file = r" /data/input.xlsx"
+    pd.DataFrame(results).to_excel(output_file, index=False)
+    print(f"\n✅ 全部完成！结果已保存：{output_file}")
+
+if __name__ == "__main__":
+run_dual_dimension()
 
