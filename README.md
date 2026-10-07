@@ -10,6 +10,7 @@ This repository contains the complete analysis code for the manuscript, includin
 - Dose–response analysis for RQ A (three-group gradient comparison)
 - Propensity Score Matching (PSM) analysis for RQ B (B1 and B2 specifications)
 - Matching boundary and extreme sample analysis for RQ C
+- Code for Satisfaction Proxy
 
 ---
 
