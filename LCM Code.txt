@@ -553,7 +553,7 @@ run_dual_dimension()
 
 
 
-#Code for the dose-response analysis in RQ A 
+#Code for the dose-response analysis in RQ A (three-group gradient comparison)
 
 import pandas as pd
 import numpy as np
