@@ -555,6 +555,8 @@ run_dual_dimension()
 
 #Code for the dose-response analysis in RQ A (three-group gradient comparison)
 
+#Code for the dose-response analysis in RQ A (three-group gradient comparison)
+
 import pandas as pd
 import numpy as np
 from scipy.stats import chi2_contingency
@@ -581,7 +583,7 @@ df['has_channel'] = (df['sensitive_word_density'] > 0).astype(int)
 df['signal_tier'] = '无信号'
 df.loc[(df['has_abstract'] == 1) & (df['has_channel'] == 0), 'signal_tier'] = '残缺信号(IF only)'
 df.loc[(df['has_abstract'] == 0) & (df['has_channel'] == 1), 'signal_tier'] = '残缺信号(THEN only)'
-df.loc[(df['has_abstract'] == 1) & (df['has_channel'] == 1), 'signal_tier'] = '完整信号'
+df.loc[(df['has_abstract'] == 1) & (df['has_channel'] == 1), 'signal_tier'] = 'IF-THEN 语言信号组'
 
 df['signal_group'] = df['signal_tier'].replace({
     '残缺信号(IF only)': '残缺信号',
@@ -617,7 +619,7 @@ def risk_difference_ci_newcombe(p1, n1, p2, n2, alpha=0.05):
 
 
 # ==================== 4. 分组统计 ====================
-tier_order = ['无信号', '残缺信号', '完整信号']
+tier_order = ['无信号', '残缺信号', 'IF-THEN 语言信号组']
 summary = []
 for tier in tier_order:
     group = df[df['signal_group'] == tier]
@@ -649,8 +651,8 @@ print("=" * 70)
 
 comparisons = [
     ('无信号', '残缺信号'),
-    ('残缺信号', '完整信号'),
-    ('无信号', '完整信号')
+    ('残缺信号', 'IF-THEN 语言信号组'),
+    ('无信号', 'IF-THEN 语言信号组')
 ]
 
 results = []
@@ -691,7 +693,7 @@ print("\n" + "=" * 70)
 print("【趋势检验】")
 print("=" * 70)
 
-order_map = {'无信号': 0, '残缺信号': 1, '完整信号': 2}
+order_map = {'无信号': 0, '残缺信号': 1, 'IF-THEN 语言信号组': 2}
 df['signal_ordinal'] = df['signal_group'].map(order_map)
 
 X_trend = df[['signal_ordinal']].values
@@ -713,7 +715,7 @@ print("=" * 70)
 
 no_signal = df[df['signal_group'] == '无信号']
 partial = df[df['signal_group'] == '残缺信号']
-full = df[df['signal_group'] == '完整信号']
+full = df[df['signal_group'] == 'IF-THEN 语言信号组']
 
 p_none = no_signal['Spillover_flag'].mean()
 p_partial = partial['Spillover_flag'].mean()
@@ -726,7 +728,7 @@ ci_low_full, ci_high_full = proportion_confint(full['Spillover_flag'].sum(), n_f
 
 print(f"\n无信号组: {p_none:.3f} (95% CI: {ci_low_none:.3f}-{ci_high_none:.3f})")
 print(f"残缺信号组: {p_partial:.3f} (95% CI: {ci_low_partial:.3f}-{ci_high_partial:.3f})")
-print(f"完整信号组: {p_full:.3f} (95% CI: {ci_low_full:.3f}-{ci_high_full:.3f})")
+print(f"IF-THEN 语言信号组: {p_full:.3f} (95% CI: {ci_low_full:.3f}-{ci_high_full:.3f})")
 
 rr = p_full / p_none if p_none > 0 else np.nan
 rr_ci_low, rr_ci_high = np.nan, np.nan
@@ -736,7 +738,7 @@ if not np.isnan(rr) and rr > 0:
         1 / full['Spillover_flag'].sum() - 1 / n_full + 1 / no_signal['Spillover_flag'].sum() - 1 / n_none)
     rr_ci_low = math.exp(log_rr - 1.96 * se_log_rr)
     rr_ci_high = math.exp(log_rr + 1.96 * se_log_rr)
-    print(f"\n风险比（完整 vs 无信号）: {rr:.2f} 倍 (95% CI: {rr_ci_low:.2f} - {rr_ci_high:.2f})")
+    print(f"\n风险比（IF-THEN 语言信号组 vs 无信号）: {rr:.2f} 倍 (95% CI: {rr_ci_low:.2f} - {rr_ci_high:.2f})")
 else:
     print("\n风险比无法计算（某组投诉率为0或负值）")
 
@@ -764,8 +766,8 @@ with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         '指标': [
             '无信号组投诉率', '无信号组95%CI',
             '残缺信号组投诉率', '残缺信号组95%CI',
-            '完整信号组投诉率', '完整信号组95%CI',
-            '风险比（完整 vs 无信号）', '风险比95%CI'
+            'IF-THEN 语言信号组投诉率', 'IF-THEN 语言信号组95%CI',
+            '风险比（IF-THEN 语言信号组 vs 无信号）', '风险比95%CI'
         ],
         '数值': [
             f"{p_none:.4f}", f"({ci_low_none:.4f}, {ci_high_none:.4f})",
@@ -783,7 +785,6 @@ print("\n" + "=" * 70)
 print("分析完成！")
 print("注：风险差95% CI基于Newcombe (1998)方法构造。")
 print("=" * 70)
-
 
 
 #Code for propensity score matching (PSM) analysis
